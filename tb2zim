@@ -1,0 +1,146 @@
+#!/usr/bin/env ruby
+
+# based on tzim.py by Bengt J. Olsson
+# adds support for hierarchical bullet lists, by using a real xml parser
+# GPL; (c)2013 vjoel@users.sourceforge.net
+
+require 'fileutils'
+require 'nokogiri'
+
+def main
+  tbdir = ARGV[0] || abort("no tomboy dir given")
+  zimdir = ARGV[1] || Dir.pwd
+
+  tbdir = File.expand_path(tbdir)
+  files = Dir.glob(File.join(tbdir, "*.note"))
+
+  if files.empty?
+    abort "no tomboy files at #{tbdir}"
+  end
+
+  FileUtils.makedirs zimdir
+  Dir.chdir zimdir
+
+  files.each do |file|
+    note_src = File.read(file)
+    note_xml = Nokogiri.XML(note_src)
+    note_xml.remove_namespaces! ### quick and dirty
+
+    title = note_xml.xpath("note/title").text
+    if not title
+      $stderr.puts "#{file} has no title"
+      title = file
+    end
+
+    ver = note_xml.xpath("note").first["version"]
+    if not ver == "0.3"
+      $stderr.puts "unknown version #{ver}"
+    end
+
+    content = note_xml.xpath("note/text/note-content").first
+
+    lcdate = note_xml.xpath("note/last-change-date").each do |date|
+      break date.text[/\d\d\d\d-\d\d-\d\d/]
+    end
+
+    cdate = note_xml.xpath("note/create-date").each do |date|
+      break date.text[/\d\d\d\d-\d\d-\d\d/]
+    end
+
+    tags = note_xml.xpath("note/tags/tag")
+    notebook = tags.map {|tag| tag.text[/\Asystem:notebook:(.+)/, 1]}.find {|t| t}
+    folder = notebook || "Unfiled"
+
+    ns = folder.gsub(/[\/&<>:; ]/, "_")
+    FileUtils.makedirs ns
+    zname = title.gsub(/[\/&<>:; ]/, "_") + ".txt"
+    zpath = File.join(ns, zname)
+    File.open(zpath, "w") do |f|
+      f.puts "====== #{title} ======"
+      f.puts 
+		  f.puts zimify(content)
+      f.puts 
+      f.puts "Last changed (in Tomboy): #{lcdate}"
+      f.puts "Note created (in Tomboy): #{cdate}"
+    end
+  end
+end
+
+def zimify x
+  case x
+  when Nokogiri::XML::Text
+    de_entify(x.text)
+
+  else
+    case x.name
+    when "note-content"
+      # nothing
+      first, *rest = x.children
+      lead = first.text.sub(/\A.*\n\n?/, "") # don't repeat the title
+      lead + rest.map {|c| zimify(c)}.join
+    
+    when "bold"
+      wrap_children x, "**"
+      
+    when "italic"
+      wrap_children x, "//"
+
+    when "strikethrough"
+      wrap_children x, "~~"
+
+    when "highlight"
+      wrap_children x, "__"
+
+    when "monospace"
+      wrap_children x, "''"
+
+    when "internal", "broken"
+      wrap_children x, "[[", "]]"
+
+    when "list"
+      indent_children x
+    
+    when "list-item"
+      wrap_children x, "* ", ""
+
+    else
+      #$stderr.puts "ignoring #{x.name}"
+      zimify_children x
+    end
+  end
+end
+
+def zimify_children x
+  x.children.map {|c| zimify(c)}.join
+end
+
+def wrap_children x, str, str2 = str
+  z = zimify_children(x)
+  case z
+  when ""
+    z
+  when /\n\z/
+    str + z.sub(/\n\z/, str2 + "\n")
+  else
+    str + z + str2
+  end
+end
+
+def indent_children x
+  zimify_children(x).gsub(/^(?=.*\S)/, "  ")
+end
+
+def de_entify s
+  s.gsub("&gt;") {
+    $stderr.puts "GT"
+    ">"
+  }.gsub("&lt;") {
+    $stderr.puts "LT"
+    "<"
+  }.gsub("&amp;") {
+    $stderr.puts "AMP"
+    "&"
+  }
+end
+
+main
